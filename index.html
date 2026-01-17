@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Blockudoku – Final Board Mode (DnD + Single Color)</title>
+<style>
+  :root{
+    --cell: 44px;
+    --gap: 2px;
+    --gridSize: calc(var(--cell)*9 + var(--gap)*8);
+
+    /* TEK RENK PALET */
+    --shapeColor: #ff9800;        /* tüm şekiller */
+    --shapeShadow: rgba(255,152,0,0.55); /* drag shadow */
+    --clearColor: rgba(0,200,255,0.45);  /* patlayacakların tek rengi */
+  }
+  body { font-family: Arial, sans-serif; text-align: center; background:#111; color:#eee; margin:0; padding:18px; }
+  h2 { margin: 10px 0 6px; }
+  .wrap { max-width: 940px; margin: 0 auto; }
+
+  /* Board */
+  .boardWrap { display:flex; justify-content:center; margin: 14px 0 10px; }
+  #board {
+    width: var(--gridSize);
+    height: var(--gridSize);
+    display:grid;
+    grid-template-columns: repeat(9, var(--cell));
+    grid-template-rows: repeat(9, var(--cell));
+    gap: var(--gap);
+    background:#000;
+    padding: var(--gap);
+    box-sizing: content-box;
+    border: 1px solid #333;
+    position: relative;
+    user-select: none;
+  }
+  .cell {
+    width: var(--cell);
+    height: var(--cell);
+    background:#222;
+    border:1px solid #333;
+    box-sizing: border-box;
+  }
+  .filled { background:#4caf50; }
+
+  /* Drag preview: shape snapped onto grid */
+  .shadow { background: var(--shapeShadow) !important; }
+
+  /* Drag preview: cells that WILL CLEAR (single color) */
+  .willClear { background: var(--clearColor) !important; }
+
+  /* invalid hint */
+  .bad { outline: 2px solid rgba(255,0,0,0.55); }
+
+  /* Shapes tray */
+  #tray { display:flex; gap:18px; justify-content:center; margin-top: 12px; flex-wrap: wrap; }
+  .shapeCard{
+    background:#181818; border:1px solid #2a2a2a; border-radius:12px;
+    padding:10px 12px; min-width: 150px;
+  }
+  .shapeTitle{ font-size:12px; opacity:.8; margin-bottom:8px; }
+
+  /* Draggable shape */
+  .shape {
+    display:grid;
+    gap: var(--gap);
+    touch-action:none;
+    cursor: grab;
+    user-select:none;
+    width: fit-content;
+    margin: 0 auto;
+  }
+  .shape:active { cursor: grabbing; }
+  .block {
+    width: calc(var(--cell) - 18px);
+    height: calc(var(--cell) - 18px);
+    background: var(--shapeColor);   /* <-- TEK RENK */
+    border-radius: 6px;
+  }
+  .block.empty { background: transparent; }
+
+  /* Ghost follows mouse */
+  #ghost {
+    position: fixed;
+    left: 0; top: 0;
+    pointer-events:none;
+    opacity: .9;
+    transform: translate(-9999px,-9999px);
+    z-index: 9999;
+  }
+
+  .bar{ display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap; margin-top: 10px; }
+  button{ padding:8px 14px; border-radius:10px; border:1px solid #333; background:#1f1f1f; color:#eee; cursor:pointer; }
+  button:hover{ background:#262626; }
+  .stat{ font-size: 13px; opacity:.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>Blockudoku – Final Board Mode</h2>
+  <div class="stat">
+    Hedef: oyun bittiğinde <b>en az boş kare</b>.
+    Oyun: verilen şekillerden <b>en az 1’i</b> bile yerleşemiyorsa biter.
+  </div>
+
+  <div class="boardWrap">
+    <div id="board" aria-label="9x9 board"></div>
+  </div>
+
+  <div class="bar">
+    <button onclick="newGame()">New Game</button>
+    <div class="stat">Boş kare: <span id="emptyCount">81</span></div>
+  </div>
+
+  <div id="tray"></div>
+  <div id="ghost"></div>
+</div>
+
+<script>
+let board = Array.from({length:9}, () => Array(9).fill(0));
+let shapes = [];
+let nextId = 1;
+
+const SHAPES = [
+  [[1]],
+  [[1,1]], [[1],[1]],
+  [[1,1,1]], [[1],[1],[1]],
+  [[1,1],[1,1]],
+  [[1,0],[1,1]], [[0,1],[1,1]],
+  [[1,1,1],[0,1,0]],
+  [[1,1,0],[0,1,1]],
+  [[1,1,1,1]], [[1],[1],[1],[1]]
+];
+
+const boardEl = document.getElementById('board');
+const trayEl = document.getElementById('tray');
+const ghostEl = document.getElementById('ghost');
+const emptyEl = document.getElementById('emptyCount');
+
+const CELL = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell'));
+const GAP  = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap'));
+
+function cloneGrid(g){ return g.map(r => r.slice()); }
+function randomShapeGrid(){ return cloneGrid(SHAPES[Math.floor(Math.random()*SHAPES.length)]); }
+function emptyCount(){ return board.flat().filter(v => !v).length; }
+function shapeDims(grid){ return { h: grid.length, w: grid[0].length }; }
+
+function drawBoard(){
+  boardEl.innerHTML = "";
+  for(let y=0;y<9;y++){
+    for(let x=0;x<9;x++){
+      const c = document.createElement('div');
+      c.className = 'cell' + (board[y][x] ? ' filled' : '');
+      boardEl.appendChild(c);
+    }
+  }
+  emptyEl.textContent = emptyCount();
+}
+
+function buildShapeElement(shape){
+  const {grid, id} = shape;
+  const {h,w} = shapeDims(grid);
+
+  const card = document.createElement('div');
+  card.className = 'shapeCard';
+
+  const title = document.createElement('div');
+  title.className = 'shapeTitle';
+  title.textContent = `Şekil #${id}`;
+  card.appendChild(title);
+
+  const el = document.createElement('div');
+  el.className = 'shape';
+  el.style.gridTemplateColumns = `repeat(${w}, ${CELL - 18}px)`;
+  el.style.gridTemplateRows = `repeat(${h}, ${CELL - 18}px)`;
+
+  for(let j=0;j<h;j++){
+    for(let i=0;i<w;i++){
+      const b = document.createElement('div');
+      b.className = 'block' + (grid[j][i] ? '' : ' empty');
+      el.appendChild(b);
+    }
+  }
+
+  el.addEventListener('pointerdown', (e) => startDrag(e, shape));
+  card.appendChild(el);
+  return card;
+}
+
+function drawTray(){
+  trayEl.innerHTML = "";
+  shapes.forEach(s => trayEl.appendChild(buildShapeElement(s)));
+}
+
+function canPlace(grid, x, y){
+  const h = grid.length, w = grid[0].length;
+  for(let j=0;j<h;j++){
+    for(let i=0;i<w;i++){
+      if(!grid[j][i]) continue;
+      if(y+j < 0 || y+j >= 9 || x+i < 0 || x+i >= 9) return false;
+      if(board[y+j][x+i]) return false;
+    }
+  }
+  return true;
+}
+
+function clearLines(){
+  for(let i=0;i<9;i++){
+    if(board[i].every(v=>v)) board[i].fill(0);
+    if(board.every(r=>r[i])) board.forEach(r=>r[i]=0);
+  }
+  for(let by=0;by<9;by+=3){
+    for(let bx=0;bx<9;bx+=3){
+      let full = true;
+      for(let j=0;j<3;j++) for(let i=0;i<3;i++){
+        if(!board[by+j][bx+i]) full = false;
+      }
+      if(full){
+        for(let j=0;j<3;j++) for(let i=0;i<3;i++) board[by+j][bx+i]=0;
+      }
+    }
+  }
+}
+
+function applyPlace(grid, x, y){
+  for(let j=0;j<grid.length;j++)
+    for(let i=0;i<grid[0].length;i++)
+      if(grid[j][i]) board[y+j][x+i]=1;
+  clearLines();
+}
+
+function hasAnyMove(){
+  return shapes.some(s=>{
+    for(let y=0;y<9;y++) for(let x=0;x<9;x++)
+      if(canPlace(s.grid,x,y)) return true;
+    return false;
+  });
+}
+
+function endGame(){
+  alert(`Oyun bitti!\nBoş kare sayısı: ${emptyCount()}`);
+}
+
+/* Preview: return set of cells that will clear (single color) */
+function getPreviewClearCells(grid, px, py){
+  const temp = board.map(r=>r.slice());
+  for(let j=0;j<grid.length;j++)
+    for(let i=0;i<grid[0].length;i++)
+      if(grid[j][i]) temp[py+j][px+i]=1;
+
+  const willClear = new Set();
+
+  for(let y=0;y<9;y++){
+    if(temp[y].every(v=>v)) for(let x=0;x<9;x++) willClear.add(`${x},${y}`);
+  }
+  for(let x=0;x<9;x++){
+    let full = true;
+    for(let y=0;y<9;y++) if(!temp[y][x]) full=false;
+    if(full) for(let y=0;y<9;y++) willClear.add(`${x},${y}`);
+  }
+  for(let by=0;by<9;by+=3){
+    for(let bx=0;bx<9;bx+=3){
+      let full=true;
+      for(let j=0;j<3;j++) for(let i=0;i<3;i++) if(!temp[by+j][bx+i]) full=false;
+      if(full) for(let j=0;j<3;j++) for(let i=0;i<3;i++) willClear.add(`${bx+i},${by+j}`);
+    }
+  }
+  return willClear;
+}
+
+/* Drag visuals */
+function clearDragVisuals(){
+  for(const el of boardEl.children){
+    el.classList.remove('shadow','willClear','bad');
+  }
+}
+function showShadow(grid, x, y){
+  for(let j=0;j<grid.length;j++)
+    for(let i=0;i<grid[0].length;i++)
+      if(grid[j][i]) boardEl.children[(y+j)*9+(x+i)]?.classList.add('shadow');
+}
+function showBad(grid, x, y){
+  for(let j=0;j<grid.length;j++)
+    for(let i=0;i<grid[0].length;i++)
+      if(grid[j][i]) boardEl.children[(y+j)*9+(x+i)]?.classList.add('bad');
+}
+function showWillClear(set){
+  for(const key of set){
+    const [x,y]=key.split(',').map(Number);
+    boardEl.children[y*9+x].classList.add('willClear');
+  }
+}
+
+/* DnD */
+let dragging=null;
+
+function makeGhost(grid){
+  ghostEl.innerHTML="";
+  ghostEl.style.display="grid";
+  ghostEl.style.gap = `${GAP}px`;
+  const {h,w}=shapeDims(grid);
+  ghostEl.style.gridTemplateColumns = `repeat(${w}, ${CELL - 18}px)`;
+  ghostEl.style.gridTemplateRows = `repeat(${h}, ${CELL - 18}px)`;
+  for(let j=0;j<h;j++){
+    for(let i=0;i<w;i++){
+      const b=document.createElement('div');
+      b.className='block' + (grid[j][i] ? '' : ' empty');
+      ghostEl.appendChild(b);
+    }
+  }
+}
+
+function boardCellFromPointer(clientX, clientY){
+  const br=boardEl.getBoundingClientRect();
+  const x=clientX - br.left;
+  const y=clientY - br.top;
+  if(x<0||y<0||x>br.width||y>br.height) return null;
+  const step = CELL + GAP;
+  const cx=Math.floor(x/step);
+  const cy=Math.floor(y/step);
+  if(cx<0||cy<0||cx>8||cy>8) return null;
+  return {cx,cy};
+}
+
+function startDrag(e, shape){
+  e.preventDefault();
+  const rect=e.currentTarget.getBoundingClientRect();
+  dragging={
+    shape,
+    offsetX: e.clientX - rect.left,
+    offsetY: e.clientY - rect.top,
+    lastCellX:null,
+    lastCellY:null,
+    ok:false
+  };
+  makeGhost(shape.grid);
+  ghostEl.style.transform=`translate(${e.clientX-dragging.offsetX}px, ${e.clientY-dragging.offsetY}px)`;
+  e.currentTarget.setPointerCapture(e.pointerId);
+  window.addEventListener('pointermove', onDragMove);
+  window.addEventListener('pointerup', onDragEnd, {once:true});
+}
+
+function onDragMove(e){
+  if(!dragging) return;
+  ghostEl.style.transform=`translate(${e.clientX-dragging.offsetX}px, ${e.clientY-dragging.offsetY}px)`;
+
+  const hit=boardCellFromPointer(e.clientX,e.clientY);
+  clearDragVisuals();
+
+  if(!hit){
+    dragging.lastCellX=dragging.lastCellY=null;
+    dragging.ok=false;
+    return;
+  }
+
+  const x=hit.cx, y=hit.cy;
+  const ok=canPlace(dragging.shape.grid,x,y);
+
+  dragging.lastCellX=x; dragging.lastCellY=y; dragging.ok=ok;
+
+  if(ok){
+    showShadow(dragging.shape.grid,x,y);
+    showWillClear(getPreviewClearCells(dragging.shape.grid,x,y));
+  } else {
+    showBad(dragging.shape.grid,x,y);
+  }
+}
+
+function onDragEnd(){
+  window.removeEventListener('pointermove', onDragMove);
+  if(!dragging){ clearDragVisuals(); return; }
+
+  const {shape, ok, lastCellX, lastCellY} = dragging;
+  ghostEl.style.transform=`translate(-9999px,-9999px)`;
+  clearDragVisuals();
+
+  if(ok && lastCellX!==null){
+    applyPlace(shape.grid,lastCellX,lastCellY);
+    shapes = shapes.filter(s=>s.id!==shape.id);
+    if(shapes.length===0) shapes=[mkShape(),mkShape(),mkShape()];
+    drawBoard(); drawTray();
+    if(!hasAnyMove()) endGame();
+  }
+  dragging=null;
+}
+
+/* Game */
+function mkShape(){ return {id: nextId++, grid: randomShapeGrid()}; }
+function newGame(){
+  board = Array.from({length:9}, () => Array(9).fill(0));
+  nextId=1;
+  shapes=[mkShape(),mkShape(),mkShape()];
+  drawBoard(); drawTray();
+}
+newGame();
+</script>
+</body>
+</html>
